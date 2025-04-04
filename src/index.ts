@@ -1,5 +1,5 @@
+import * as crypto from 'crypto';
 import express, { Request, Response } from 'express';
-import * as fs from 'fs';
 import { Readable } from "stream";
 import * as zlib from "zlib";
 
@@ -7,11 +7,11 @@ const app = express();
 const cors = require("cors");
 const { pipeline } = require('node:stream');
 const easyxml = require('easyxml');
-const port = process.env.PORT || 3000;
+const port = process.env.PORT ?? 3000;
 
 app.use(cors());
 
-var serializer = new easyxml({
+let serializer = new easyxml({
     singularize: true,
     rootElement: 'response',
     dateFormat: 'ISO',
@@ -35,7 +35,7 @@ app.get("/get-html", (req: Request, res: Response) => {
 
 app.get("/get-xml", (req: Request, res: Response) => {
     res.header('Content-Type', 'text/xml');
-    var obj = {
+    let obj = {
         items: [{
             name: 'one',
             _id: 1
@@ -51,7 +51,7 @@ app.get("/get-xml", (req: Request, res: Response) => {
         boolz: true,
         nullz: null
     };
-    var xml = serializer.render(obj);
+    let xml = serializer.render(obj);
     res.send(xml);
 })
 
@@ -132,6 +132,83 @@ app.get("/auth-type", (request: Request, response: Response) => {
 
 /// encryption
 // 1. aes encryption
+
+// Add these constants after the existing AES constants
+// POST /aes/256/cbc/encrypt
+// POST /aes/256/cbc/decrypt
+const modes = ['cbc', 'ecb', 'ctr', 'gcm'];
+const keySizes = [128, 192, 256];
+const keys = new Map();
+const ivs = new Map();
+
+// Initialize keys and IVs for each combination
+modes.forEach(mode => {
+    keySizes.forEach(size => {
+        const keyId = `aes-${size}-${mode}`;
+        keys.set(keyId, crypto.randomBytes(size / 8));
+        ivs.set(keyId, mode !== 'ecb' ? crypto.randomBytes(16) : null);
+    });
+});
+
+app.post('/aes/:keySize/:mode/encrypt', express.json(), (req: Request, res: Response): void => {
+    const { plaintext } = req.body;
+    const { keySize, mode } = req.params;
+    const algorithm = `aes-${keySize}-${mode}`;
+
+    if (!plaintext) {
+        res.status(400).send({ error: 'Plaintext is required' });
+        return;
+    }
+
+    try {
+        const key = keys.get(algorithm);
+        const iv = ivs.get(algorithm);
+
+        const cipher = iv
+            ? crypto.createCipheriv(algorithm, key, iv)
+            : crypto.createCipheriv(algorithm, key, null);
+
+        let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+
+        res.send({
+            encrypted,
+            iv: iv ? iv.toString('hex') : null,
+            algorithm
+        });
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        res.status(400).send({ error: `Encryption failed: ${errorMessage}` });
+    }
+});
+
+app.post('/aes/:keySize/:mode/decrypt', express.json(), (req: Request, res: Response): void => {
+    const { encrypted, iv } = req.body;
+    const { keySize, mode } = req.params;
+    const algorithm = `aes-${keySize}-${mode}`;
+
+    if (!encrypted) {
+        res.status(400).send({ error: 'Encrypted text is required' });
+        return;
+    }
+
+    try {
+        const key = keys.get(algorithm);
+        const ivBuffer = iv ? Buffer.from(iv, 'hex') : null;
+
+        const decipher = ivBuffer
+            ? crypto.createDecipheriv(algorithm, key, ivBuffer)
+            : crypto.createDecipheriv(algorithm, key, null);
+
+        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+
+        res.send({ decrypted, algorithm });
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        res.status(400).send({ error: `Decryption failed: ${errorMessage}` });
+    }
+});
 // 2. rsa encryption
 
 /// base64
