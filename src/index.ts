@@ -136,34 +136,169 @@ app.get("/auth-type", (request: Request, response: Response) => {
 // Add these constants after the existing AES constants
 // POST /aes/256/cbc/encrypt
 // POST /aes/256/cbc/decrypt
-const modes = ['cbc', 'ecb', 'ctr', 'gcm'];
 const keySizes = [128, 192, 256];
 const keys = new Map();
-const ivs = new Map();
+
+// Update the modes constant with all supported modes
+const modes = [
+    'cbc',  // Cipher Block Chaining
+    'ccm',  // Counter with CBC-MAC
+    'cfb',  // Cipher Feedback
+    'ctr',  // Counter
+    'ecb',  // Electronic Codebook
+    'gcm',  // Galois/Counter Mode
+    'ige',  // Infinite Garble Extension
+    'ocb',  // Offset Codebook Mode
+    'ofb',  // Output Feedback
+    'sic',  // Segmented Integer Counter (alias for CTR)
+] as const;
+
+type AESMode = typeof modes[number];
+
+// Define which modes require IV/Nonce
+const requiresIV: Record<AESMode, boolean> = {
+    'cbc': true,
+    'ccm': true,
+    'cfb': true,
+    'ctr': true,
+    'ecb': false,
+    'gcm': true,
+    'ige': true,
+    'ocb': true,
+    'ofb': true,
+    'sic': true
+};
+
+// Define which modes require authentication tag
+const requiresAuth: Record<AESMode, boolean> = {
+    'cbc': false,
+    'ccm': true,
+    'cfb': false,
+    'ctr': false,
+    'ecb': false,
+    'gcm': true,
+    'ige': false,
+    'ocb': true,
+    'ofb': false,
+    'sic': true,
+};
+
+// Add SIC mode handler in the decryption endpoint
+app.post('/aes/:keySize/:mode/decrypt', express.json(), (req: Request, res: Response): void => {
+    const { encrypted, iv, authTag } = req.body;
+    const { keySize, mode } = req.params;
+    let algorithm = `aes-${keySize}-${mode}`;
+
+    // Handle SIC as CTR
+    if (mode === 'sic') {
+        algorithm = `aes-${keySize}-ctr`;
+    }
+
+    // ...rest of the decryption logic...
+});
+
+// Add IGE encryption function
+function encryptIGE(plaintext: Buffer, key: Buffer, iv: Buffer): Buffer {
+    const blockSize = 16; // AES block size
+    const blocks = Math.ceil(plaintext.length / blockSize);
+    const result = Buffer.alloc(blocks * blockSize);
+    
+    let prevCiphertext = iv.subarray(0, blockSize);
+    let prevPlaintext = iv.subarray(blockSize);
+    
+    for (let i = 0; i < blocks; i++) {
+        const block = plaintext.subarray(i * blockSize, (i + 1) * blockSize);
+        const xoredBlock = Buffer.alloc(blockSize);
+        
+        // XOR with previous ciphertext
+        for (let j = 0; j < blockSize; j++) {
+            xoredBlock[j] = block[j] ^ prevCiphertext[j];
+        }
+        
+        // Encrypt
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        cipher.setAutoPadding(true);
+        const encrypted = cipher.update(xoredBlock);
+        
+        // XOR with previous plaintext
+        for (let j = 0; j < blockSize; j++) {
+            result[i * blockSize + j] = encrypted[j] ^ prevPlaintext[j];
+        }
+        
+        prevCiphertext = result.subarray(i * blockSize, (i + 1) * blockSize);
+        prevPlaintext = block;
+    }
+    
+    return result;
+}
+
+// Add IGE decryption function
+function decryptIGE(ciphertext: Buffer, key: Buffer, iv: Buffer): Buffer {
+    const blockSize = 16;
+    const blocks = Math.ceil(ciphertext.length / blockSize);
+    const result = Buffer.alloc(blocks * blockSize);
+    
+    let prevCiphertext = iv.subarray(0, blockSize);
+    let prevPlaintext = iv.subarray(blockSize);
+    
+    for (let i = 0; i < blocks; i++) {
+        const block = ciphertext.subarray(i * blockSize, (i + 1) * blockSize);
+        const xoredBlock = Buffer.alloc(blockSize);
+        
+        // XOR with previous plaintext
+        for (let j = 0; j < blockSize; j++) {
+            xoredBlock[j] = block[j] ^ prevPlaintext[j];
+        }
+        
+        // Decrypt
+        const decipher = crypto.createDecipheriv('aes-256-ecb', key, null);
+        decipher.setAutoPadding(false);
+        const decrypted = decipher.update(xoredBlock);
+        
+        // XOR with previous ciphertext
+        for (let j = 0; j < blockSize; j++) {
+            result[i * blockSize + j] = decrypted[j] ^ prevCiphertext[j];
+        }
+        
+        prevCiphertext = block;
+        prevPlaintext = result.subarray(i * blockSize, (i + 1) * blockSize);
+    }
+    
+    return result;
+}
 
 // Initialize keys and IVs for each combination
 modes.forEach(mode => {
     keySizes.forEach(size => {
         const keyId = `aes-${size}-${mode}`;
         keys.set(keyId, crypto.randomBytes(size / 8));
-        ivs.set(keyId, mode !== 'ecb' ? crypto.randomBytes(16) : null);
     });
 });
 
+// Update the encryption endpoint
 app.post('/aes/:keySize/:mode/encrypt', express.json(), (req: Request, res: Response): void => {
     const { plaintext } = req.body;
     const { keySize, mode } = req.params;
-    const algorithm = `aes-${keySize}-${mode}`;
+    let algorithm = `aes-${keySize}-${mode}`;
 
     if (!plaintext) {
         res.status(400).send({ error: 'Plaintext is required' });
         return;
     }
 
+    if (!modes.includes(mode as AESMode)) {
+        res.status(400).send({ error: 'Invalid mode' });
+        return;
+    }
+
+    if (mode === 'sic') {
+        algorithm = `aes-${keySize}-ctr`;
+    }
+
     try {
         const key = keys.get(algorithm);
-        const iv = ivs.get(algorithm);
-
+        const iv = requiresIV[mode as AESMode] ? crypto.randomBytes(16) : null;
+        
         const cipher = iv
             ? crypto.createCipheriv(algorithm, key, iv)
             : crypto.createCipheriv(algorithm, key, null);
@@ -171,9 +306,13 @@ app.post('/aes/:keySize/:mode/encrypt', express.json(), (req: Request, res: Resp
         let encrypted = cipher.update(plaintext, 'utf8', 'hex');
         encrypted += cipher.final('hex');
 
+        // Get authentication tag for authenticated encryption modes
+        const authTag = requiresAuth[mode as AESMode] && 'getAuthTag' in cipher ? (cipher as crypto.CipherGCM).getAuthTag() : null;
+
         res.send({
             encrypted,
             iv: iv ? iv.toString('hex') : null,
+            authTag: authTag ? authTag.toString('hex') : null,
             algorithm
         });
     } catch (error) {
@@ -182,23 +321,41 @@ app.post('/aes/:keySize/:mode/encrypt', express.json(), (req: Request, res: Resp
     }
 });
 
+// Update the decryption endpoint
 app.post('/aes/:keySize/:mode/decrypt', express.json(), (req: Request, res: Response): void => {
-    const { encrypted, iv } = req.body;
+    const { encrypted, iv, authTag } = req.body;
     const { keySize, mode } = req.params;
-    const algorithm = `aes-${keySize}-${mode}`;
+    let algorithm = `aes-${keySize}-${mode}`;
 
     if (!encrypted) {
         res.status(400).send({ error: 'Encrypted text is required' });
         return;
     }
 
+    if (!modes.includes(mode as AESMode)) {
+        res.status(400).send({ error: 'Invalid mode' });
+        return;
+    }
+
+    if (mode === 'sic') {
+        algorithm = `aes-${keySize}-ctr`;
+    }
+
     try {
         const key = keys.get(algorithm);
         const ivBuffer = iv ? Buffer.from(iv, 'hex') : null;
-
+        
         const decipher = ivBuffer
             ? crypto.createDecipheriv(algorithm, key, ivBuffer)
             : crypto.createDecipheriv(algorithm, key, null);
+
+        // Set authentication tag for authenticated encryption modes
+        if (requiresAuth[mode as AESMode]) {
+            if (!authTag) {
+                throw new Error('Authentication tag is required for this mode');
+            }
+            (decipher as crypto.DecipherGCM).setAuthTag(Buffer.from(authTag, 'hex'));
+        }
 
         let decrypted = decipher.update(encrypted, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
