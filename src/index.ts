@@ -183,20 +183,6 @@ const requiresAuth: Record<AESMode, boolean> = {
     'sic': true,
 };
 
-// Add SIC mode handler in the decryption endpoint
-app.post('/aes/:keySize/:mode/decrypt', express.json(), (req: Request, res: Response): void => {
-    const { encrypted, iv, authTag } = req.body;
-    const { keySize, mode } = req.params;
-    let algorithm = `aes-${keySize}-${mode}`;
-
-    // Handle SIC as CTR
-    if (mode === 'sic') {
-        algorithm = `aes-${keySize}-ctr`;
-    }
-
-    // ...rest of the decryption logic...
-});
-
 // Add IGE encryption function
 function encryptIGE(plaintext: Buffer, key: Buffer, iv: Buffer): Buffer {
     const blockSize = 16; // AES block size
