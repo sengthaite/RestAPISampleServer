@@ -141,16 +141,15 @@ const keys = new Map();
 
 // Update the modes constant with all supported modes
 const modes = [
-    'cbc',  // Cipher Block Chaining
-    'ccm',  // Counter with CBC-MAC
-    'cfb',  // Cipher Feedback
-    'ctr',  // Counter
-    'ecb',  // Electronic Codebook
-    'gcm',  // Galois/Counter Mode
-    'ige',  // Infinite Garble Extension
-    'ocb',  // Offset Codebook Mode
     'ofb',  // Output Feedback
-    'sic',  // Segmented Integer Counter (alias for CTR)
+    'gcm',  // Galois/Counter Mode
+    'ecb',  // Electronic Codebook
+    'ctr',  // Counter
+    'cfb',  // Cipher Feedback
+    'ccm',  // Counter with CBC-MAC
+    'cbc',  // Cipher Block Chaining
+    'ocb',  // Offset Codebook Mode
+    'xts', // XOR-based stream
 ] as const;
 
 type AESMode = typeof modes[number];
@@ -163,10 +162,9 @@ const requiresIV: Record<AESMode, boolean> = {
     'ctr': true,
     'ecb': false,
     'gcm': true,
-    'ige': true,
     'ocb': true,
     'ofb': true,
-    'sic': true
+    "xts": true
 };
 
 // Define which modes require authentication tag
@@ -177,160 +175,206 @@ const requiresAuth: Record<AESMode, boolean> = {
     'ctr': false,
     'ecb': false,
     'gcm': true,
-    'ige': false,
     'ocb': true,
     'ofb': false,
-    'sic': true,
+    'xts': false,
 };
 
-// Add IGE encryption function
-function encryptIGE(plaintext: Buffer, key: Buffer, iv: Buffer): Buffer {
-    const blockSize = 16; // AES block size
-    const blocks = Math.ceil(plaintext.length / blockSize);
-    const result = Buffer.alloc(blocks * blockSize);
-    
-    let prevCiphertext = iv.subarray(0, blockSize);
-    let prevPlaintext = iv.subarray(blockSize);
-    
-    for (let i = 0; i < blocks; i++) {
-        const block = plaintext.subarray(i * blockSize, (i + 1) * blockSize);
-        const xoredBlock = Buffer.alloc(blockSize);
-        
-        // XOR with previous ciphertext
-        for (let j = 0; j < blockSize; j++) {
-            xoredBlock[j] = block[j] ^ prevCiphertext[j];
-        }
-        
-        // Encrypt
-        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-        cipher.setAutoPadding(true);
-        const encrypted = cipher.update(xoredBlock);
-        
-        // XOR with previous plaintext
-        for (let j = 0; j < blockSize; j++) {
-            result[i * blockSize + j] = encrypted[j] ^ prevPlaintext[j];
-        }
-        
-        prevCiphertext = result.subarray(i * blockSize, (i + 1) * blockSize);
-        prevPlaintext = block;
-    }
-    
-    return result;
-}
-
-// Add IGE decryption function
-function decryptIGE(ciphertext: Buffer, key: Buffer, iv: Buffer): Buffer {
-    const blockSize = 16;
-    const blocks = Math.ceil(ciphertext.length / blockSize);
-    const result = Buffer.alloc(blocks * blockSize);
-    
-    let prevCiphertext = iv.subarray(0, blockSize);
-    let prevPlaintext = iv.subarray(blockSize);
-    
-    for (let i = 0; i < blocks; i++) {
-        const block = ciphertext.subarray(i * blockSize, (i + 1) * blockSize);
-        const xoredBlock = Buffer.alloc(blockSize);
-        
-        // XOR with previous plaintext
-        for (let j = 0; j < blockSize; j++) {
-            xoredBlock[j] = block[j] ^ prevPlaintext[j];
-        }
-        
-        // Decrypt
-        const decipher = crypto.createDecipheriv('aes-256-ecb', key, null);
-        decipher.setAutoPadding(false);
-        const decrypted = decipher.update(xoredBlock);
-        
-        // XOR with previous ciphertext
-        for (let j = 0; j < blockSize; j++) {
-            result[i * blockSize + j] = decrypted[j] ^ prevCiphertext[j];
-        }
-        
-        prevCiphertext = block;
-        prevPlaintext = result.subarray(i * blockSize, (i + 1) * blockSize);
-    }
-    
-    return result;
-}
 
 // Initialize keys and IVs for each combination
 modes.forEach(mode => {
     keySizes.forEach(size => {
-        const keyId = `aes-${size}-${mode}`;
-        keys.set(keyId, crypto.randomBytes(size / 8));
+        const algorithm = `aes-${size}-${mode}`;
+        if (mode == 'xts' && size != 192) {
+            keys.set(algorithm, crypto.randomBytes((size / 8) * 2));
+        } else if (mode != 'xts') {
+            keys.set(algorithm, crypto.randomBytes(size / 8));
+        }
     });
 });
 
-// Update the encryption endpoint
-app.post('/aes/:keySize/:mode/encrypt', express.json(), (req: Request, res: Response): void => {
-    const { plaintext } = req.body;
-    const { keySize, mode } = req.params;
-    let algorithm = `aes-${keySize}-${mode}`;
+function encrypt(plaintext: any, mode: string, algorithm: string) {
 
     if (!plaintext) {
-        res.status(400).send({ error: 'Plaintext is required' });
+        console.log('Plaintext is required')
         return;
     }
 
     if (!modes.includes(mode as AESMode)) {
-        res.status(400).send({ error: 'Invalid mode' });
+        console.log(`Invalid mode ${mode}`);
         return;
-    }
-
-    if (mode === 'sic') {
-        algorithm = `aes-${keySize}-ctr`;
     }
 
     try {
         const key = keys.get(algorithm);
-        const iv = requiresIV[mode as AESMode] ? crypto.randomBytes(16) : null;
-        
+        let iv = null;
+        let options = {}
+        let aad = "Additional data for authentication";
+        const plainTextBufferLength = Buffer.from(plaintext).length;
+        if (requiresIV[mode as AESMode]) {
+            switch (mode) {
+                case 'ofb':
+                    /**
+                     * Output Feedback
+                     * =================
+                     * IV length must be: 16
+                     */
+                    iv = crypto.randomBytes(16);
+                    break;
+                case 'gcm':
+                    /**
+                     * Galois/Counter Mode
+                     * ===================
+                     * Initialization Vector (IV) range: 1 - 128
+                     * Recommended IV: 12
+                     */
+                    iv = crypto.randomBytes(128);
+                    break;
+                case 'ecb':
+                    /**
+                     * Electronic Codebook
+                     * ====================
+                     * No IV required
+                     * No authTag
+                     */
+                    break;
+                case 'ctr':
+                    /**
+                     * Counter Mode
+                     * ============
+                     * Initialization Vector (IV) length: 16
+                     * IV must be length (Nonce + counter): 16
+                     */
+                    iv = crypto.randomBytes(16);
+                    break;
+                case 'cfb':
+                    /**
+                     * Cipher Feedback
+                     * ===============
+                     * Initialization Vector (IV) length: 16
+                     * IV must be length: 16
+                     */
+                    iv = crypto.randomBytes(16);
+                    break;
+                case 'ccm':
+                    /**
+                     * Cipher Block Chaining with Message Authentication Code
+                     * =======================================================
+                     * authTagLength (even number): 4, 6, 8, 10, 12, 14, or 16
+                     * Recommended authTagLength: 16
+                     * Inititalization Vector (IV) length: 7 - 13
+                     * Recommended IV length: 12
+                     * IV must be unique for each encryption
+                     */
+                    iv = crypto.randomBytes(13);
+                    options = { authTagLength: 16, plaintextLength: plainTextBufferLength };
+                    break;
+                case 'ocb':
+                    /**
+                     * Offset Codebook
+                     * ================
+                     * Recommended authTagLength: 16
+                     * Valid authTagLength range: 1 - 16
+                     * Recommended Initialization Vector (IV) length: 12
+                     * Valid IV length range: 1 - 15
+                     */
+                    iv = crypto.randomBytes(15);
+                    options = { authTagLength: 16 };
+                    break;
+                case 'cbc':
+                    /**
+                     * iv must be 16 bytes for cbc
+                     * No authTag
+                     */
+                    iv = crypto.randomBytes(16);
+                    break;
+                case 'xts':
+                    /**
+                     * XOR-based stream
+                     * ================
+                     * IV length must be: 16
+                     * Keysize support: 256 (128 * 2) or 512 (256 * 2)
+                     * Designed to encrypt data in sectors/blocks (like disk encryption)
+                     */
+                    if (plainTextBufferLength < 16) {
+                        console.log('Plaintext size must not be smaller than the AES block sizes (16 bytes)');
+                        return;
+                    }
+                    iv = crypto.randomBytes(16);
+                    break;
+            }
+        }
+
         const cipher = iv
-            ? crypto.createCipheriv(algorithm, key, iv)
-            : crypto.createCipheriv(algorithm, key, null);
+            ? crypto.createCipheriv(algorithm, key, iv, options)
+            : crypto.createCipheriv(algorithm, key, null, options);
+        cipher.setAutoPadding(true);
+
+        // Get authentication tag for authenticated encryption modes
+        let authTag = null;
+        switch (mode) {
+            /**
+             * setAAD (optional) is only available for authenticated encryption modes GCM, CCM, OCB, and chacha20-poly1305
+             */
+            case 'gcm':
+            case 'ccm':
+                {
+                    const ccmCipher = cipher as crypto.CipherCCM;
+                    ccmCipher.setAAD(Buffer.from(aad), { plaintextLength: plainTextBufferLength });
+                    break;
+                }
+            case 'ocb': {
+                const ocbCipher = cipher as crypto.CipherOCB;
+                ocbCipher.setAAD(Buffer.from(aad), { plaintextLength: plainTextBufferLength });
+                break;
+            }
+        }
 
         let encrypted = cipher.update(plaintext, 'utf8', 'hex');
         encrypted += cipher.final('hex');
 
-        // Get authentication tag for authenticated encryption modes
-        const authTag = requiresAuth[mode as AESMode] && 'getAuthTag' in cipher ? (cipher as crypto.CipherGCM).getAuthTag() : null;
+        switch (mode) {
+            /**
+             * getAuthTag (optional) is only available for authenticated encryption modes GCM, CCM, OCB, and chacha20-poly1305
+             */
+            case 'gcm':
+            case 'ccm':
+            case 'ocb': {
+                const ocbCipher = cipher as crypto.CipherOCB;
+                authTag = ocbCipher.getAuthTag();
+                break;
+            }
+        }
 
-        res.send({
+        let result: any = {
             encrypted,
-            iv: iv ? iv.toString('hex') : null,
-            authTag: authTag ? authTag.toString('hex') : null,
             algorithm
-        });
+        }
+        if (iv != null && iv != undefined) result = { ...result, iv: iv.toString('hex') };
+        if (authTag != null && authTag != undefined) result = { ...result, authTag: authTag.toString('hex') };
+        return result;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        res.status(400).send({ error: `Encryption failed: ${errorMessage}` });
+        console.log(`Encryption failed ${algorithm}: ${errorMessage}`)
     }
-});
+}
 
-// Update the decryption endpoint
-app.post('/aes/:keySize/:mode/decrypt', express.json(), (req: Request, res: Response): void => {
-    const { encrypted, iv, authTag } = req.body;
-    const { keySize, mode } = req.params;
-    let algorithm = `aes-${keySize}-${mode}`;
+function decrypt(ciphertext: any, iv: string | null, authTag: string | null, mode: string, algorithm: string) {
 
-    if (!encrypted) {
-        res.status(400).send({ error: 'Encrypted text is required' });
+    if (!ciphertext) {
+        console.log('Encrypted data is required');
         return;
     }
 
     if (!modes.includes(mode as AESMode)) {
-        res.status(400).send({ error: 'Invalid mode' });
+        console.log('Invalid mode');
         return;
-    }
-
-    if (mode === 'sic') {
-        algorithm = `aes-${keySize}-ctr`;
     }
 
     try {
         const key = keys.get(algorithm);
         const ivBuffer = iv ? Buffer.from(iv, 'hex') : null;
-        
+
         const decipher = ivBuffer
             ? crypto.createDecipheriv(algorithm, key, ivBuffer)
             : crypto.createDecipheriv(algorithm, key, null);
@@ -343,15 +387,35 @@ app.post('/aes/:keySize/:mode/decrypt', express.json(), (req: Request, res: Resp
             (decipher as crypto.DecipherGCM).setAuthTag(Buffer.from(authTag, 'hex'));
         }
 
-        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
 
-        res.send({ decrypted, algorithm });
+        const result = { decrypted, algorithm };
+        console.log(result);
+        return result;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        res.status(400).send({ error: `Decryption failed: ${errorMessage}` });
+        console.log(`Decryption failed: ${errorMessage}`)
     }
-});
+}
+
+modes.forEach(mode => {
+    keySizes.forEach(size => {
+        if (mode != 'xts' || size != 192) {
+            const algorithm = `aes-${size}-${mode}`;
+            const plaintext = 'Hello, World!123';
+            console.log(encrypt(plaintext, mode, algorithm));
+        }
+    })
+})
+
+// Update the encryption endpoint
+// app.post('/aes/:keySize/:mode/encrypt', express.json(), encrypt);
+
+// Update the decryption endpoint
+// app.post('/aes/:keySize/:mode/decrypt', express.json(), decrypt);
+
+
 // 2. rsa encryption
 
 /// base64
@@ -362,6 +426,6 @@ app.post('/aes/:keySize/:mode/decrypt', express.json(), (req: Request, res: Resp
 
 /// different auth mode
 
-app.listen(port, () => {
-    console.log(`Server running at http://localhost:${port}`);
-});
+// app.listen(port, () => {
+//     console.log(`Server running at http://localhost:${port}`);
+// });
