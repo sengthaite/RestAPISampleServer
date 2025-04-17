@@ -193,7 +193,118 @@ modes.forEach(mode => {
     });
 });
 
-function encrypt(plaintext: any, mode: string, algorithm: string) {
+function getIV(mode: AESMode, plainTextBufferLength: number) {
+    let iv = null;
+    if (requiresIV[mode]) {
+        switch (mode) {
+            case 'ofb':
+                /**
+                 * Output Feedback
+                 * =================
+                 * IV length must be: 16
+                 */
+                iv = crypto.randomBytes(16);
+                break;
+            case 'gcm':
+                /**
+                 * Galois/Counter Mode
+                 * ===================
+                 * Initialization Vector (IV) range: 1 - 128
+                 * Recommended IV: 12
+                 */
+                iv = crypto.randomBytes(128);
+                break;
+            case 'ecb':
+                /**
+                 * Electronic Codebook
+                 * ====================
+                 * No IV required
+                 * No authTag
+                 */
+                break;
+            case 'ctr':
+                /**
+                 * Counter Mode
+                 * ============
+                 * Initialization Vector (IV) length: 16
+                 * IV must be length (Nonce + counter): 16
+                 */
+                iv = crypto.randomBytes(16);
+                break;
+            case 'cfb':
+                /**
+                 * Cipher Feedback
+                 * ===============
+                 * Initialization Vector (IV) length: 16
+                 * IV must be length: 16
+                 */
+                iv = crypto.randomBytes(16);
+                break;
+            case 'ccm':
+                /**
+                 * Cipher Block Chaining with Message Authentication Code
+                 * =======================================================
+                 * authTagLength (even number): 4, 6, 8, 10, 12, 14, or 16
+                 * Recommended authTagLength: 16
+                 * Inititalization Vector (IV) length: 7 - 13
+                 * Recommended IV length: 12
+                 * IV must be unique for each encryption
+                 */
+                iv = crypto.randomBytes(13);
+                break;
+            case 'ocb':
+                /**
+                 * Offset Codebook
+                 * ================
+                 * Recommended authTagLength: 16
+                 * Valid authTagLength range: 1 - 16
+                 * Recommended Initialization Vector (IV) length: 12
+                 * Valid IV length range: 1 - 15
+                 */
+                iv = crypto.randomBytes(15);
+                break;
+            case 'cbc':
+                /**
+                 * iv must be 16 bytes for cbc
+                 * No authTag
+                 */
+                iv = crypto.randomBytes(16);
+                break;
+            case 'xts':
+                /**
+                 * XOR-based stream
+                 * ================
+                 * IV length must be: 16
+                 * Keysize support: 256 (128 * 2) or 512 (256 * 2)
+                 * Designed to encrypt data in sectors/blocks (like disk encryption)
+                 */
+                if (plainTextBufferLength < 16) {
+                    console.log('Plaintext size must not be smaller than the AES block sizes (16 bytes)');
+                    return;
+                }
+                iv = crypto.randomBytes(16);
+                break;
+        }
+    }
+    return iv;
+}
+
+function getOptions(mode: AESMode, plainTextBufferLength: number) {
+    let options = {};
+    if (requiresIV[mode]) {
+        switch (mode) {
+            case 'ccm':
+                options = { authTagLength: 16, plaintextLength: plainTextBufferLength };
+                break;
+            case 'ocb':
+                options = { authTagLength: 16 };
+                break;
+        }
+    }
+    return options;
+}
+
+function encrypt(plaintext: any, mode: string, algorithm: string, aad: string) {
 
     if (!plaintext) {
         console.log('Plaintext is required')
@@ -207,103 +318,10 @@ function encrypt(plaintext: any, mode: string, algorithm: string) {
 
     try {
         const key = keys.get(algorithm);
-        let iv = null;
-        let options = {}
-        let aad = "Additional data for authentication";
+        let iv = getIV(mode as AESMode, Buffer.from(plaintext).length);
+        let options = getOptions(mode as AESMode, Buffer.from(plaintext).length);
+
         const plainTextBufferLength = Buffer.from(plaintext).length;
-        if (requiresIV[mode as AESMode]) {
-            switch (mode) {
-                case 'ofb':
-                    /**
-                     * Output Feedback
-                     * =================
-                     * IV length must be: 16
-                     */
-                    iv = crypto.randomBytes(16);
-                    break;
-                case 'gcm':
-                    /**
-                     * Galois/Counter Mode
-                     * ===================
-                     * Initialization Vector (IV) range: 1 - 128
-                     * Recommended IV: 12
-                     */
-                    iv = crypto.randomBytes(128);
-                    break;
-                case 'ecb':
-                    /**
-                     * Electronic Codebook
-                     * ====================
-                     * No IV required
-                     * No authTag
-                     */
-                    break;
-                case 'ctr':
-                    /**
-                     * Counter Mode
-                     * ============
-                     * Initialization Vector (IV) length: 16
-                     * IV must be length (Nonce + counter): 16
-                     */
-                    iv = crypto.randomBytes(16);
-                    break;
-                case 'cfb':
-                    /**
-                     * Cipher Feedback
-                     * ===============
-                     * Initialization Vector (IV) length: 16
-                     * IV must be length: 16
-                     */
-                    iv = crypto.randomBytes(16);
-                    break;
-                case 'ccm':
-                    /**
-                     * Cipher Block Chaining with Message Authentication Code
-                     * =======================================================
-                     * authTagLength (even number): 4, 6, 8, 10, 12, 14, or 16
-                     * Recommended authTagLength: 16
-                     * Inititalization Vector (IV) length: 7 - 13
-                     * Recommended IV length: 12
-                     * IV must be unique for each encryption
-                     */
-                    iv = crypto.randomBytes(13);
-                    options = { authTagLength: 16, plaintextLength: plainTextBufferLength };
-                    break;
-                case 'ocb':
-                    /**
-                     * Offset Codebook
-                     * ================
-                     * Recommended authTagLength: 16
-                     * Valid authTagLength range: 1 - 16
-                     * Recommended Initialization Vector (IV) length: 12
-                     * Valid IV length range: 1 - 15
-                     */
-                    iv = crypto.randomBytes(15);
-                    options = { authTagLength: 16 };
-                    break;
-                case 'cbc':
-                    /**
-                     * iv must be 16 bytes for cbc
-                     * No authTag
-                     */
-                    iv = crypto.randomBytes(16);
-                    break;
-                case 'xts':
-                    /**
-                     * XOR-based stream
-                     * ================
-                     * IV length must be: 16
-                     * Keysize support: 256 (128 * 2) or 512 (256 * 2)
-                     * Designed to encrypt data in sectors/blocks (like disk encryption)
-                     */
-                    if (plainTextBufferLength < 16) {
-                        console.log('Plaintext size must not be smaller than the AES block sizes (16 bytes)');
-                        return;
-                    }
-                    iv = crypto.randomBytes(16);
-                    break;
-            }
-        }
 
         const cipher = iv
             ? crypto.createCipheriv(algorithm, key, iv, options)
@@ -317,6 +335,11 @@ function encrypt(plaintext: any, mode: string, algorithm: string) {
              * setAAD (optional) is only available for authenticated encryption modes GCM, CCM, OCB, and chacha20-poly1305
              */
             case 'gcm':
+                {
+                    const gcmCipher = cipher as crypto.CipherGCM;
+                    gcmCipher.setAAD(Buffer.from(aad));
+                    break;
+                }
             case 'ccm':
                 {
                     const ccmCipher = cipher as crypto.CipherCCM;
@@ -325,7 +348,7 @@ function encrypt(plaintext: any, mode: string, algorithm: string) {
                 }
             case 'ocb': {
                 const ocbCipher = cipher as crypto.CipherOCB;
-                ocbCipher.setAAD(Buffer.from(aad), { plaintextLength: plainTextBufferLength });
+                ocbCipher.setAAD(Buffer.from(aad));
                 break;
             }
         }
@@ -338,7 +361,17 @@ function encrypt(plaintext: any, mode: string, algorithm: string) {
              * getAuthTag (optional) is only available for authenticated encryption modes GCM, CCM, OCB, and chacha20-poly1305
              */
             case 'gcm':
+                {
+                    const gcmCipher = cipher as crypto.CipherGCM;
+                    authTag = gcmCipher.getAuthTag();
+                    break;
+                }
             case 'ccm':
+                {
+                    const ccmCipher = cipher as crypto.CipherCCM;
+                    authTag = ccmCipher.getAuthTag();
+                    break;
+                }
             case 'ocb': {
                 const ocbCipher = cipher as crypto.CipherOCB;
                 authTag = ocbCipher.getAuthTag();
@@ -359,7 +392,8 @@ function encrypt(plaintext: any, mode: string, algorithm: string) {
     }
 }
 
-function decrypt(ciphertext: any, iv: string | null, authTag: string | null, mode: string, algorithm: string) {
+
+function decrypt(plaintextLength: number, ciphertext: any, iv: string | null, authTag: string | null, aad: string | null, mode: string, algorithm: string) {
 
     if (!ciphertext) {
         console.log('Encrypted data is required');
@@ -374,28 +408,51 @@ function decrypt(ciphertext: any, iv: string | null, authTag: string | null, mod
     try {
         const key = keys.get(algorithm);
         const ivBuffer = iv ? Buffer.from(iv, 'hex') : null;
+        let options = getOptions(mode as AESMode, plaintextLength);
 
         const decipher = ivBuffer
-            ? crypto.createDecipheriv(algorithm, key, ivBuffer)
-            : crypto.createDecipheriv(algorithm, key, null);
+            ? crypto.createDecipheriv(algorithm, key, ivBuffer, options)
+            : crypto.createDecipheriv(algorithm, key, null, options);
 
         // Set authentication tag for authenticated encryption modes
         if (requiresAuth[mode as AESMode]) {
             if (!authTag) {
                 throw new Error('Authentication tag is required for this mode');
             }
-            (decipher as crypto.DecipherGCM).setAuthTag(Buffer.from(authTag, 'hex'));
+            switch (mode) {
+                case 'gcm':
+                    {
+                        const decipherGCM = decipher as crypto.DecipherGCM;
+                        decipherGCM.setAuthTag(Buffer.from(authTag, 'hex'));
+                        if (aad != null || aad != undefined) decipherGCM.setAAD(Buffer.from(aad));
+                        break;
+                    }
+                case 'ccm':
+                    {
+                        const decipherCCM = decipher as crypto.DecipherCCM;
+                        decipherCCM.setAuthTag(Buffer.from(authTag, 'hex'));
+                        if (aad != null || aad != undefined) decipherCCM.setAAD(Buffer.from(aad), { plaintextLength });
+                        break;
+                    }
+                case 'ocb':
+                    {
+                        const decipherOCB = decipher as crypto.DecipherOCB;
+                        decipherOCB.setAuthTag(Buffer.from(authTag, 'hex'));
+                        if (aad != null || aad != undefined) decipherOCB.setAAD(Buffer.from(aad), { plaintextLength });
+                        break;
+                    }
+            }
+
         }
 
         let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
 
         const result = { decrypted, algorithm };
-        console.log(result);
         return result;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.log(`Decryption failed: ${errorMessage}`)
+        console.log(`Decryption failed: ${errorMessage} ${algorithm}`)
     }
 }
 
@@ -404,7 +461,12 @@ modes.forEach(mode => {
         if (mode != 'xts' || size != 192) {
             const algorithm = `aes-${size}-${mode}`;
             const plaintext = 'Hello, World!123';
-            console.log(encrypt(plaintext, mode, algorithm));
+            const plaintextLength = Buffer.from(plaintext).length;
+            let aad = "Additional data for authentication";
+            const encryptedResult = encrypt(plaintext, mode, algorithm, aad);
+            const decryptedResult = decrypt(plaintextLength, encryptedResult.encrypted, encryptedResult.iv, encryptedResult.authTag, aad, mode, algorithm);
+            console.log(encryptedResult);
+            console.log(decryptedResult);
         }
     })
 })
