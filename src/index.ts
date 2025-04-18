@@ -304,7 +304,7 @@ function getOptions(mode: AESMode, plainTextBufferLength: number) {
     return options;
 }
 
-function encrypt(plaintext: any, mode: string, algorithm: string, aad: string) {
+function encryptAES(plaintext: any, mode: string, algorithm: string, aad: string) {
 
     if (!plaintext) {
         console.log('Plaintext is required')
@@ -393,7 +393,7 @@ function encrypt(plaintext: any, mode: string, algorithm: string, aad: string) {
 }
 
 
-function decrypt(plaintextLength: number, ciphertext: any, iv: string | null, authTag: string | null, aad: string | null, mode: string, algorithm: string) {
+function decryptAES(plaintextLength: number, ciphertext: any, iv: string | null, authTag: string | null, aad: string | null, mode: string, algorithm: string) {
 
     if (!ciphertext) {
         console.log('Encrypted data is required');
@@ -456,6 +456,7 @@ function decrypt(plaintextLength: number, ciphertext: any, iv: string | null, au
     }
 }
 
+/*
 modes.forEach(mode => {
     keySizes.forEach(size => {
         if (mode != 'xts' || size != 192) {
@@ -463,22 +464,127 @@ modes.forEach(mode => {
             const plaintext = 'Hello, World!123';
             const plaintextLength = Buffer.from(plaintext).length;
             let aad = "Additional data for authentication";
-            const encryptedResult = encrypt(plaintext, mode, algorithm, aad);
-            const decryptedResult = decrypt(plaintextLength, encryptedResult.encrypted, encryptedResult.iv, encryptedResult.authTag, aad, mode, algorithm);
+            const encryptedResult = encryptAES(plaintext, mode, algorithm, aad);
+            const decryptedResult = decryptAES(plaintextLength, encryptedResult.encrypted, encryptedResult.iv, encryptedResult.authTag, aad, mode, algorithm);
             console.log(encryptedResult);
             console.log(decryptedResult);
         }
     })
 })
+*/
 
-// Update the encryption endpoint
-// app.post('/aes/:keySize/:mode/encrypt', express.json(), encrypt);
+// Update the encryption endpoint AES
+// app.post('/aes/:keySize/:mode/encrypt', express.json(), encryptAES);
 
-// Update the decryption endpoint
-// app.post('/aes/:keySize/:mode/decrypt', express.json(), decrypt);
+// Update the decryption endpoint AES
+// app.post('/aes/:keySize/:mode/decrypt', express.json(), decryptAES);
 
 
 // 2. rsa encryption
+type RSAOptions = {
+    /**
+    * Supported paddings:
+    * ====================
+    * crypto.constants.RSA_NO_PADDING
+    * crypto.constants.RSA_PKCS1_PADDING
+    * crypto.constants.RSA_PKCS1_OAEP_PADDING
+    * crypto.constants.RSA_PKCS1_PSS_PADDING (for sign/verify)
+    */
+    padding?: number;
+    /**
+     * oaepHash specifies the hash function to use for OAEP padding.
+     * Common values: 'sha1', 'sha256', 'sha384', 'sha512'.
+     * Use a stronger hash (e.g., 'sha256' or above) for better security.
+     * Only used when padding is RSA_PKCS1_OAEP_PADDING.
+     */
+    oaepHash?: string;
+    passphrase?: string;
+    /**
+     * Optional label to associate with the encryption operation.
+     * 
+     * The `label` property is used only when the `padding` is set to `crypto.constants.RSA_PKCS1_OAEP_PADDING`.
+     * It allows you to bind additional data to the encryption operation, which must be provided again during decryption.
+     * This can be used to prevent certain types of attacks or to add context to the encrypted message.
+     * 
+     * If specified during encryption, the same label must be provided during decryption, or decryption will fail.
+     * 
+     * @example
+     * ```typescript
+     * const options: RSAOptions = {
+     *   padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+     *   oaepHash: 'sha256',
+     *   label: Buffer.from('my-app-context')
+     * };
+     * ```
+     */
+    label?: Buffer;
+};
+
+function encryptRSA(plaintext: string, publicKey: string | Buffer, options: RSAOptions = {}) {
+    try {
+        const encryptOptions = {
+            key: publicKey,
+            padding: options.padding ?? crypto.constants.RSA_PKCS1_OAEP_PADDING,
+            oaepHash: options.oaepHash,
+            passphrase: options.passphrase,
+            oaepLabel: options.label
+        };
+        const encrypted = crypto.publicEncrypt(encryptOptions, Buffer.from(plaintext));
+        return {
+            encrypted: encrypted.toString('base64')
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.log(`RSA encryption failed: ${errorMessage}`);
+    }
+}
+
+function decryptRSA(ciphertext: string, privateKey: string | Buffer, options: RSAOptions = {}) {
+    try {
+        const decryptOptions = {
+            key: privateKey,
+            padding: options.padding ?? crypto.constants.RSA_PKCS1_OAEP_PADDING,
+            oaepHash: options.oaepHash,
+            passphrase: options.passphrase,
+            oaepLabel: options.label
+        };
+        const decrypted = crypto.privateDecrypt(decryptOptions, Buffer.from(ciphertext, 'base64'));
+        return {
+            decrypted: decrypted.toString('utf8')
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.log(`RSA decryption failed: ${errorMessage}`);
+    }
+}
+
+
+const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: {
+        type: 'pkcs1',   // Key encoding type: 'pkcs1' (RSA-specific) or 'spki' (recommended for public keys)
+        format: 'pem'    // Key encoding format: 'pem' (Base64 with header/footer) or 'der' (binary)
+    },
+    privateKeyEncoding: {
+        type: 'pkcs1',   // Key encoding type: 'pkcs1' (RSA-specific) or 'pkcs8' (recommended for private keys)
+        format: 'pem',   // Key encoding format: 'pem' or 'der'
+        cipher: 'aes-256-cbc',      // Optional: encrypt the private key with this cipher
+        passphrase: 'your-passphrase' // Passphrase for private key encryption
+    }
+})
+
+try {
+    const encRSA = encryptRSA("Hello, World RSA!", publicKey, {
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+    });
+    const decRSA = decryptRSA(encRSA!.encrypted, privateKey, {
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        passphrase: 'your-passphrase'
+    });
+    console.log(decRSA)
+} catch (error) {
+    console.log(`Error ${error}`);
+}
 
 /// base64
 
