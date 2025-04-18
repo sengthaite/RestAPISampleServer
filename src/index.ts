@@ -574,14 +574,73 @@ const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
 })
 
 try {
-    const encRSA = encryptRSA("Hello, World RSA!", publicKey, {
+    // Test with OAEP padding (default), with passphrase
+    const encRSA_OAEP_withPass = encryptRSA("Hello, World RSA! (OAEP, passphrase)", publicKey, {
         padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
     });
-    const decRSA = decryptRSA(encRSA!.encrypted, privateKey, {
+    const decRSA_OAEP_withPass = decryptRSA(encRSA_OAEP_withPass!.encrypted, privateKey, {
         padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
         passphrase: 'your-passphrase'
     });
-    console.log(decRSA)
+    console.log("OAEP with passphrase:", decRSA_OAEP_withPass);
+
+    // Test with OAEP padding (default), without passphrase
+    const { publicKey: pubNoPass, privateKey: privNoPass } = crypto.generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: 'pkcs1', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs1', format: 'pem' }
+    });
+    const encRSA_OAEP_noPass = encryptRSA("Hello, World RSA! (OAEP, no passphrase)", pubNoPass, {
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+    });
+    const decRSA_OAEP_noPass = decryptRSA(encRSA_OAEP_noPass!.encrypted, privNoPass, {
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING
+    });
+    console.log("OAEP without passphrase:", decRSA_OAEP_noPass);
+
+    // Test with PKCS1 v1.5 padding, with passphrase
+    const encRSA_PKCS1_withPass = encryptRSA("Hello, World RSA! (PKCS1, passphrase)", publicKey, {
+        padding: crypto.constants.RSA_PKCS1_PADDING,
+    });
+    const decRSA_PKCS1_withPass = decryptRSA(encRSA_PKCS1_withPass!.encrypted, privateKey, {
+        padding: crypto.constants.RSA_PKCS1_PADDING,
+        passphrase: 'your-passphrase'
+    });
+    console.log("PKCS1 with passphrase:", decRSA_PKCS1_withPass);
+
+    // Test with PKCS1 v1.5 padding, without passphrase
+    const encRSA_PKCS1_noPass = encryptRSA("Hello, World RSA! (PKCS1, no passphrase)", pubNoPass, {
+        padding: crypto.constants.RSA_PKCS1_PADDING,
+    });
+    const decRSA_PKCS1_noPass = decryptRSA(encRSA_PKCS1_noPass!.encrypted, privNoPass, {
+        padding: crypto.constants.RSA_PKCS1_PADDING
+    });
+    console.log("PKCS1 without passphrase:", decRSA_PKCS1_noPass);
+
+    const keySize = 2048;
+    const paddingLength = keySize / 8;
+    const data = Buffer.alloc(paddingLength, 0); // Create buffer of exact size
+    data.write("Hello, World!"); // Write our data into the buffer
+
+    // Test with NO_PADDING (not recommended), with passphrase
+    const encRSA_NOPAD_withPass = encryptRSA(data.toString('binary'), publicKey, {
+        padding: crypto.constants.RSA_NO_PADDING,
+    });
+    const decRSA_NOPAD_withPass = decryptRSA(encRSA_NOPAD_withPass!.encrypted, privateKey, {
+        padding: crypto.constants.RSA_NO_PADDING,
+        passphrase: 'your-passphrase'
+    });
+    console.log("NO_PADDING with passphrase:", decRSA_NOPAD_withPass);
+
+    // Test with NO_PADDING (not recommended), without passphrase
+    const encRSA_NOPAD_noPass = encryptRSA(data.toString('binary'), pubNoPass, {
+        padding: crypto.constants.RSA_NO_PADDING,
+    });
+    const decRSA_NOPAD_noPass = decryptRSA(encRSA_NOPAD_noPass!.encrypted, privNoPass, {
+        padding: crypto.constants.RSA_NO_PADDING
+    });
+    console.log("NO_PADDING without passphrase:", decRSA_NOPAD_noPass);
+
 } catch (error) {
     console.log(`Error ${error}`);
 }
